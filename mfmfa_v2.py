@@ -329,7 +329,7 @@ if __name__ == '__main__':
     rng = np.random.default_rng(42)
 
     N = 150   # Number of data points
-    p = 20     # Dimensionality (set this to any positive integer)
+    p = 2     # Dimensionality (set this to any positive integer)
     true_K = 3
 
     # Helper: random SPD covariance of size (p, p)
