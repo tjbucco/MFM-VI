@@ -31,7 +31,7 @@
 Run the Python script in the mixtureenv environment with:
 
 ```bash
-python mfmfa_v2.py
+python mfmcavi_v2.py
 ```
 
 ## Updating the Environment
