@@ -3,6 +3,7 @@ from scipy.stats import invwishart, betanbinom as BNB
 
 from CAVI.mfm import CAVI_MFM
 from CAVI.baselines import DPMixtureCAVI, FiniteMixtureCAVI
+from param_recovery import assess_parameter_recovery
 
 
 # Global Hyperparameters
@@ -216,6 +217,24 @@ if __name__ == '__main__':
         fin.fit(max_iter=100, tol=1e-4, verbose=False)
         k_fin, _ = fin.infer_K()
 
+
+        param_results = {}
+        for m, key in [(model, "mfm"), (dp, "dp"), (fin, "fin")]:
+            try:
+                param_results.update(
+                    assess_parameter_recovery(
+                        m, key,
+                        true_mus=true_mus, true_Omegas=true_Omegas, true_eta=true_eta,
+                        true_labels=labels,
+                    )
+                )
+            except AttributeError as e:
+                # Leaves this method's param-recovery entries out of `results` for
+                # this trial rather than crashing the whole run -- surface the
+                # message once so you know which attribute name to fix.
+                if trial == 0:
+                    print(f"\n[param_recovery warning] {e}")
+
         results.append({
             "trial": trial + 1,
             "true_K": true_K,
@@ -229,6 +248,7 @@ if __name__ == '__main__':
             "abs_error_mfm": abs(k_mfm - true_occupied_K),
             "abs_error_dp": abs(k_dp - true_occupied_K),
             "abs_error_fin": abs(k_fin - true_occupied_K),
+            **param_results,
         })
 
         if per_trial_statistics == True:
@@ -269,6 +289,28 @@ if __name__ == '__main__':
                 row_label = f"  K={i+1:<4}"
                 row_vals = "".join(f"{confusion[i, j]:<6}" for j in range(max_K_seen))
                 print(f"{row_label}{row_vals}")
+        
+    for method_key, method_name in [("mfm", "MFM (proposed)"), ("dp", "DP-CAVI"), ("fin", "Finite-T CAVI")]:
+        mu_err = [r[f"{method_key}_mean_mu_error"] for r in results if f"{method_key}_mean_mu_error" in r]
+        om_err = [r[f"{method_key}_mean_omega_error"] for r in results if f"{method_key}_mean_omega_error" in r]
+        eta_err = [r[f"{method_key}_mean_eta_error"] for r in results if f"{method_key}_mean_eta_error" in r]
+        ari = [r[f"{method_key}_ari"] for r in results if f"{method_key}_ari" in r]
+        nmi = [r[f"{method_key}_nmi"] for r in results if f"{method_key}_nmi" in r]
+        missing = [r[f"{method_key}_n_missing"] for r in results if f"{method_key}_n_missing" in r]
+        spurious = [r[f"{method_key}_n_spurious"] for r in results if f"{method_key}_n_spurious" in r]
+    
+        print(f"\n[{method_name} -- parameter recovery]")
+        if mu_err:
+            import numpy as np
+            print(f"  Mean ||mu_true - mu_est||:        {np.mean(mu_err):.3f}")
+            print(f"  Mean ||Omega_true - Omega_est||_F: {np.mean(om_err):.3f}")
+            print(f"  Mean |eta_true - eta_est|:          {np.mean(eta_err):.3f}")
+            print(f"  Mean # missing / spurious comps:    {np.mean(missing):.2f} / {np.mean(spurious):.2f}")
+            print(f"  Adjusted Rand Index (mean):        {np.mean(ari):.3f}")
+            print(f"  Normalized Mutual Info (mean):      {np.mean(nmi):.3f}")
+        else:
+            print("  (no successful extractions -- check attribute names in param_recovery.py)")
+ 
 
     if show_pertrialcomparison==True:
         print("\nPer-trial comparison:")
