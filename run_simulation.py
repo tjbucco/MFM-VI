@@ -24,7 +24,7 @@ B0_SCALE = np.eye(p) * (NU0 - p - 1)         # so E[Omega_k] = I under the prior
 N_TRIALS = 100
 N_PER_TRIAL = 500
 
-OCCUPANCY_THRESHOLD_FRAC = 0.03
+OCCUPANCY_THRESHOLD_FRAC = 0.0001
 OCCUPANCY_THRESHOLD_MIN = 2.0
 
 
