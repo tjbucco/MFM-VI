@@ -31,7 +31,7 @@
 Run the Python script in the mixtureenv environment with:
 
 ```bash
-python mfmcavi_v2.py
+python run_simulation.py
 ```
 
 ## Updating the Environment
