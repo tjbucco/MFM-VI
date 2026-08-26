@@ -1,4 +1,4 @@
-# MFMFA-VI
+# MFM-VI
 
 ## Requirements
 
@@ -10,8 +10,8 @@
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/tjbucco/MFMFA-VI.git
-   cd MFMFA-VI
+   git clone https://github.com/tjbucco/MFM-VI.git
+   cd MFM-VI
    ```
 
 2. Create the Conda environment:
