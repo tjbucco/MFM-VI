@@ -31,89 +31,98 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 # ---------------------------------------------------------------------
 # 1) Extracting point estimates from a fitted model
 # ---------------------------------------------------------------------
-def get_posterior_estimates(model, method):
+def get_posterior_estimates(model, method, min_eta_threshold=1e-3):
     """
-    Extract point estimates of (mu_k, Omega_k, eta_k) and a hard cluster
-    assignment (argmax responsibility per data point) from a fitted CAVI
-    model object.
-
-    Confirmed against CAVI_MFM's source:
-        - mu_k estimate    : model.hat_b_k                 (T x p)
-        - Omega_k estimate : model.hat_B_k / (model.hat_nu_k - p - 1)
-                              (matches CAVI_MFM._compute_expectations's E_Omega_k_inv
-                               derivation, just un-inverted -- E[Omega_k], not E[Omega_k^-1])
-        - responsibilities : model.r_nk for CAVI_MFM -- a LIST of length T
-                              indexed by truncation level kappa, needs
-                              marginalizing over model.kappa_prob, same as
-                              infer_K_by_responsibility_threshold. For
-                              DPMixtureCAVI / FiniteMixtureCAVI it's
-                              model.phi -- a single N x T array (no q(K),
-                              so no marginalization needed).
-        - eta_k estimate   : not read from a single clean posterior object
-                              (CAVI_MFM's weights live in per-kappa Dirichlet
-                              parameters; DP's live in stick-breaking Beta
-                              params gamma1/gamma2; Finite's live in
-                              alpha_hat). Estimated empirically instead, as
-                              the responsibility mass per component
-                              (marginalized over q(K) for MFM), normalized --
-                              consistent with how effective_counts is
-                              computed in the main script, and directly
-                              comparable across all three methods.
-
-    Returns
-    -------
-    mus_est : (K_est, p) array
-    Omegas_est : (K_est, p, p) array
-    eta_est : (K_est,) array
-    hard_labels : (N,) int array, values in [0, K_est)
+    Extract point estimates of (mu_k, Omega_k, eta_k) and hard cluster assignments
+    from fitted MFM / CAVI model objects using NormalWishartAtoms.
     """
-    p_dim = model.p
+    p_dim = getattr(model, "p", getattr(model, "D", None))
 
-    # --- mu_k, Omega_k ---
-    if hasattr(model, "hat_b_k") and hasattr(model, "hat_B_k") and hasattr(model, "hat_nu_k"):
-        mus_est_full = np.asarray(model.hat_b_k)                      # (T, p)
-        hat_B_k = np.asarray(model.hat_B_k)                           # (T, p, p)
-        hat_nu_k = np.asarray(model.hat_nu_k)                         # (T,)
-        denom = np.clip(hat_nu_k - p_dim - 1, 1e-6, None)
-        Omegas_est_full = hat_B_k / denom[:, None, None]              # (T, p, p)
+    # -----------------------------------------------------------------
+    # 1. Force expectation computation if using NormalWishartAtoms
+    # -----------------------------------------------------------------
+    if hasattr(model, "_compute_atom_expectations"):
+        model._compute_atom_expectations()
+
+    # -----------------------------------------------------------------
+    # 2. Extract Component Means (mus_est_full)
+    # -----------------------------------------------------------------
+    if hasattr(model, "component_means"):
+        mus_est_full = np.atleast_2d(model.component_means())
+    elif hasattr(model, "m_hat"):
+        mus_est_full = np.atleast_2d(model.m_hat)
     else:
-        raise AttributeError(
-            f"[{method}] couldn't find hat_b_k/hat_B_k/hat_nu_k -- "
-            "adjust get_posterior_estimates() for this class's attribute names"
-        )
+        raise AttributeError(f"[{method}] Could not find mean attributes (m_hat or component_means).")
 
-    # --- effective (marginalized) responsibility mass per component ---
-    if hasattr(model, "r_nk"):
-        # CAVI_MFM-style: list over truncation level kappa, needs marginalizing
-        # over q(K) exactly as infer_K_by_responsibility_threshold does.
-        if not hasattr(model, "kappa_prob"):
-            raise AttributeError(
-                f"[{method}] r_nk found but no kappa_prob -- "
-                "can't marginalize over q(K)"
-            )
+    # -----------------------------------------------------------------
+    # 3. Extract Component Covariances / Precision (Omegas_est_full)
+    # -----------------------------------------------------------------
+    if hasattr(model, "component_covariances"):
+        covs = np.atleast_3d(model.component_covariances())
+        Omegas_est_full = covs  # Note: Use np.linalg.inv(covs) if your metric expects Precision
+    elif hasattr(model, "C_hat") and hasattr(model, "nu_hat"):
+        nu_hat = np.asarray(model.nu_hat)
+        denom = np.maximum(nu_hat - p_dim - 1.0, 1e-6)
+        covs = np.atleast_3d(model.C_hat / denom[:, None, None])
+        Omegas_est_full = covs
+    else:
+        raise AttributeError(f"[{method}] Could not find covariance/precision parameters (C_hat or component_covariances).")
+
+    # Guard against 1D / 2D dimensional collapse
+    if mus_est_full.ndim == 1:
+        mus_est_full = mus_est_full[:, None]
+    if Omegas_est_full.ndim == 2:
+        Omegas_est_full = Omegas_est_full[None, :, :]
+
+    # -----------------------------------------------------------------
+    # 4. Extract Responsibilities across dynamic (MFM) and fixed models
+    # -----------------------------------------------------------------
+    if hasattr(model, "r") and isinstance(model.r, list):  # Untied MFM Structure
         N, T = model.N, model.T
         w_nk = np.zeros((N, T))
+        
         for kappa in range(1, T + 1):
-            w_nk[:, :kappa] += model.kappa_prob[kappa - 1] * model.r_nk[kappa - 1]
-    elif hasattr(model, "phi"):
-        # DPMixtureCAVI / FiniteMixtureCAVI: single N x T responsibility
-        # matrix, no kappa marginalization (no model selection over K).
-        w_nk = np.asarray(model.phi)
+            rk = model.r[kappa - 1]
+            if rk is not None:
+                w_nk[:, :kappa] += model.pi[kappa - 1] * rk
+            elif model.pi[kappa - 1] > 0 and hasattr(model, "_expected_log_lik"):
+                E_log_lik = model._expected_log_lik(model.Y)
+                rk = model._resp_for(E_log_lik, kappa)
+                w_nk[:, :kappa] += model.pi[kappa - 1] * rk
+
+    elif hasattr(model, "r") and model.r is not None:  # Standard Single Array (DP / Finite)
+        w_nk = np.asarray(model.r)
+    elif hasattr(model, "mixture_weights"):
+        eta_est_full = np.asarray(model.mixture_weights())
+        w_nk = np.tile(eta_est_full, (model.N, 1))
     else:
-        raise AttributeError(
-            f"[{method}] couldn't find a responsibility attribute "
-            "(tried r_nk, phi) -- adjust get_posterior_estimates()"
-        )
+        raise AttributeError(f"[{method}] Could not find responsibility attribute 'r'.")
 
-    hard_labels = np.argmax(w_nk, axis=1)
-    effective_counts = w_nk.sum(axis=0)                # (T,)
-    eta_est_full = effective_counts / effective_counts.sum()
+    # -----------------------------------------------------------------
+    # 5. Compute Empirical Mixture Weights & Filter Active Atoms
+    # -----------------------------------------------------------------
+    hard_labels_full = np.argmax(w_nk, axis=1)
+    
+    effective_counts = w_nk.sum(axis=0)
+    if effective_counts.sum() > 0:
+        eta_est_full = effective_counts / effective_counts.sum()
+    elif hasattr(model, "mixture_weights"):
+        eta_est_full = np.asarray(model.mixture_weights())
 
-    # keep only components that actually have mass (avoids matching against
-    # empty/unused truncation slots), then re-index labels to match
-    active = np.unique(hard_labels)
+    # Retain components above mass threshold
+    active = np.where(eta_est_full >= min_eta_threshold)[0]
+    
+    if len(active) == 0:
+        active = np.unique(hard_labels_full)
+
+    # Remap hard cluster labels to range [0, len(active)-1]
     idx_map = {old: new for new, old in enumerate(active)}
-    hard_labels = np.array([idx_map[l] for l in hard_labels])
+    hard_labels = np.array([idx_map.get(l, -1) for l in hard_labels_full])
+
+    # Reassign orphaned points to nearest active cluster
+    unassigned = hard_labels == -1
+    if np.any(unassigned):
+        hard_labels[unassigned] = np.argmax(w_nk[unassigned][:, active], axis=1)
 
     mus_est = mus_est_full[active]
     Omegas_est = Omegas_est_full[active]
@@ -121,8 +130,6 @@ def get_posterior_estimates(model, method):
     eta_est = eta_est / eta_est.sum()
 
     return mus_est, Omegas_est, eta_est, hard_labels
-
-
 # ---------------------------------------------------------------------
 # 2) Matching estimated components to true components
 # ---------------------------------------------------------------------
