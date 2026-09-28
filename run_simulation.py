@@ -23,7 +23,7 @@ A0, B0_GAMMA = 5.0, 0.10
 #A0_true, B0_GAMMA_true = 1.0, 0.30
 force_equal_sizes_flag = False
 
-# NIW prior
+# NW prior
 LAMBDA0 = 0.05
 NU0 = p + max(4, p // 2)            # e.g., 15 for p=10
 B0_MU = np.zeros(p)
